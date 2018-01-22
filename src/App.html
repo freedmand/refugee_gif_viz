@@ -1,0 +1,167 @@
+{{#if loaded}}
+  <svg ref:svg width="{{width}}" height="{{height}}">
+    <rect x="0" y="0" width="{{width}}" height="{{height}}" fill="white"></rect>
+    <text x="25" y="35" font-family="Verdana" font-size="14">{{{day}}}</text>
+    {{#each pathData as path}}
+      <path d="{{path}}" fill="#eee" stroke="#777"/>
+    {{/each}}
+    {{#each history as refugee}}
+      <circle cx="{{refugee.projection[0]}}"
+        cy="{{refugee.projection[1]}}"
+        r="{{Math.sqrt(refugee.Count) * 4}}"
+        fill="#0032e8" fill-opacity="{{Math.pow(0.7, refugee.age + 1)}}">
+      </circle>
+    {{/each}}
+    {{#each refugees as refugee}}
+      {{#if refugee.Day == day}}
+        <circle cx="{{refugee.projection[0]}}"
+                cy="{{refugee.projection[1]}}"
+                r="{{Math.sqrt(refugee.Count) * 4}}"
+                fill="#0032e8" fill-opacity="0.7">
+        </circle>
+      {{/if}}
+    {{/each}}
+  </svg>
+{{/if}}
+
+<style>
+</style>
+
+<script>
+  import {geoAlbersUsa, geoPath} from 'd3-geo';
+
+  // Width and height of map.
+  const width = 960;
+  const height = 500;
+  const screenshotInterval = 15;
+
+  // Inspired by https://stackoverflow.com/a/23593099
+  function formatDate(date) {
+    let month = '' + (date.getMonth() + 1);
+    let day = '' + date.getDate();
+    const year = date.getFullYear();
+
+    if (month.length < 2) month = '0' + month;
+    if (day.length < 2) day = '0' + day;
+
+    return [year, month, day].join('-');
+  }
+
+  const gif = new GIF({
+    workers: 4,
+    quality: 10,
+    background: '#fff',
+    width,
+    height,
+  });
+
+  export default {
+    oncreate() {
+      const projection = geoAlbersUsa()
+          .translate([width/2, height/2])  // translate to center.
+          .scale([1000]);                  // scale down to see entire country.
+      const pathGenerator = geoPath().projection(projection);
+
+      fetch('/us-states.json')
+      .then(res => res.json())
+      .catch(error => console.error(error))
+      .then(json => {
+        const pathData = [];
+        json.features.forEach((feature) => {
+          const path = pathGenerator(feature);
+          if (path == null) return;
+          pathData.push(path);
+        });
+        // Extract valid refugee data, min and max days.
+        const validRefugees = [];
+        for (const refugee of this.get('refugees')) {
+          const p = projection([refugee.Lon, refugee.Lat]);
+          if (p != null) {
+            const newRefugee = {projection: p};
+            Object.assign(newRefugee, refugee);
+            validRefugees.push(newRefugee);
+          }
+        }
+        this.set({
+          pathData,
+          refugees: validRefugees,
+          loaded: true,
+        });
+        this.incrementDay();
+      });
+    },
+    data() {
+      return {
+        refugees: window['DATA'],
+        day: '2002-01-01',
+        pathData: null,
+        projection: null,
+        loaded: false,
+        history: [],
+        dayIndex: 0,
+        width,
+        height,
+      };
+    },
+    methods: {
+      captureScreenshot(callback) {
+        const raw = new XMLSerializer().serializeToString(this.refs.svg);
+        const svgBlob = new Blob([raw], {type:"image/svg+xml;charset=utf-8"});
+        const svgUrl = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        img.onload = function () {
+          gif.addFrame(img);
+          URL.revokeObjectURL(svgUrl);
+          callback();
+        };
+        img.src = svgUrl;
+      },
+      render() {
+        gif.on('finished', function(blob) {
+          window.open(URL.createObjectURL(blob));
+        });
+
+        gif.render();
+      },
+      getCurrentRefugees() {
+        const day = this.get('day');
+        return this.get('refugees').filter(refugee => refugee.Day == day);
+      },
+      ageHistory() {
+        const history = this.get('history');
+        const newHistory = [];
+        for (const refugee of history) {
+          refugee.age += 1;
+          if (Math.pow(0.7, refugee.age) >= 0.05) {
+            newHistory.push(refugee);
+          }
+        }
+        this.set({history: newHistory});
+      },
+      incrementDay() {
+        this.ageHistory();
+        const history = this.get('history');
+        for (const refugee of this.getCurrentRefugees()) {
+          refugee['age'] = 1;
+          history.push(refugee);
+        }
+        const [year, month, day] = this.get('day').split('-');
+        const tomorrow = new Date(year, parseInt(month) - 1, parseInt(day) + 1);
+        this.set({
+          day: formatDate(tomorrow),
+          dayIndex: this.get('dayIndex') + 1,
+          history,
+        });
+        if (this.get('dayIndex') > 5840) {
+          this.render();
+        } else {
+          if (this.get('dayIndex') % screenshotInterval == 0) {
+            this.captureScreenshot(() => this.incrementDay());
+          } else {
+            this.incrementDay();
+          }
+        }
+      },
+    }
+  };
+</script>
